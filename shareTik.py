@@ -13,17 +13,21 @@ CHUNK_SIZE = 64 * 1024  # 64KB chunks for memory efficiency
 ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 IMAGE_PREVIEW_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 FILE_ICON_BY_EXTENSION = {
-    '.pdf': 'pdf.svg',
-    '.doc': 'word.svg', '.docx': 'word.svg', '.docm': 'word.svg', '.rtf': 'word.svg',
-    '.ppt': 'powerpoint.svg', '.pptx': 'powerpoint.svg', '.pps': 'powerpoint.svg', '.ppsx': 'powerpoint.svg',
-    '.xls': 'excel.svg', '.xlsx': 'excel.svg', '.xlsm': 'excel.svg', '.csv': 'excel.svg',
+    '.pdf': 'pdf.png',
+    '.doc': 'word.png', '.docx': 'word.png', '.docm': 'word.png', '.dot': 'word.png',
+    '.dotx': 'word.png', '.odt': 'word.png', '.rtf': 'word.png',
+    '.ppt': 'powerpoint.png', '.pptx': 'powerpoint.png', '.pps': 'powerpoint.png', '.ppsx': 'powerpoint.png',
+    '.pptm': 'powerpoint.png', '.pot': 'powerpoint.png', '.potx': 'powerpoint.png', '.odp': 'powerpoint.png',
+    '.xls': 'excel.png', '.xlsx': 'excel.png', '.xlsm': 'excel.png', '.csv': 'excel.png', '.ods': 'excel.png',
     '.zip': 'zip.svg', '.rar': 'zip.svg', '.7z': 'zip.svg', '.tar': 'zip.svg', '.gz': 'zip.svg',
+    '.bz2': 'zip.svg', '.xz': 'zip.svg',
     '.mp4': 'video.svg', '.mkv': 'video.svg', '.mov': 'video.svg', '.avi': 'video.svg',
-    '.webm': 'video.svg', '.wmv': 'video.svg', '.m4v': 'video.svg',
+    '.webm': 'video.svg', '.wmv': 'video.svg', '.m4v': 'video.svg', '.flv': 'video.svg', '.3gp': 'video.svg',
     '.mp3': 'audio.svg', '.wav': 'audio.svg', '.ogg': 'audio.svg', '.m4a': 'audio.svg',
-    '.flac': 'audio.svg', '.aac': 'audio.svg',
+    '.flac': 'audio.svg', '.aac': 'audio.svg', '.opus': 'audio.svg', '.wma': 'audio.svg',
     '.jpg': 'image.svg', '.jpeg': 'image.svg', '.png': 'image.svg', '.gif': 'image.svg',
-    '.webp': 'image.svg', '.bmp': 'image.svg', '.svg': 'image.svg',
+    '.webp': 'image.svg', '.bmp': 'image.svg', '.svg': 'image.svg', '.ico': 'image.svg',
+    '.tif': 'image.svg', '.tiff': 'image.svg', '.heic': 'image.svg',
 }
 
 # --- Modern UI Templates ---
@@ -34,6 +38,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
     <style>
         :root {{
             --bg-color: #0f172a;
@@ -49,6 +54,8 @@ HTML_TEMPLATE = """
         body {{
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background-color: var(--bg-color);
+            background-image: radial-gradient(circle at 50% -10%, rgba(56, 189, 248, 0.10), transparent 55%);
+            background-repeat: no-repeat;
             color: var(--text-main);
             margin: 0;
             padding: 0;
@@ -128,6 +135,7 @@ HTML_TEMPLATE = """
         }}
         .search-input {{
             width: 100%;
+            box-sizing: border-box;
             padding: 0.75rem 1rem;
             border-radius: 0.75rem;
             background: var(--card-bg);
@@ -146,31 +154,38 @@ HTML_TEMPLATE = """
             gap: 1.5rem;
         }}
         .item {{
-            background: var(--card-bg);
+            background: linear-gradient(180deg, rgba(51, 65, 85, 0.35), var(--card-bg) 65%);
             border: 1px solid var(--border);
             border-radius: 1rem;
+            transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+            position: relative;
+            overflow: hidden;
+        }}
+        .item:hover, .item:focus-within {{
+            transform: translateY(-5px);
+            border-color: var(--accent);
+            box-shadow: 0 10px 20px -10px rgba(56, 189, 248, 0.3);
+        }}
+        .item-link {{
             padding: 1.5rem 1rem;
             text-align: center;
-            transition: all 0.2s;
             text-decoration: none;
             color: inherit;
             display: flex;
             flex-direction: column;
             align-items: center;
             gap: 0.75rem;
-            position: relative;
-            overflow: hidden;
-        }}
-        .item:hover {{
-            transform: translateY(-5px);
-            border-color: var(--accent);
-            box-shadow: 0 10px 20px -10px rgba(56, 189, 248, 0.3);
         }}
         .item-icon {{
-            width: 3.5rem;
-            height: 3.5rem;
+            width: 4rem;
+            height: 4rem;
             object-fit: contain;
-            margin-bottom: 0.5rem;
+            margin-bottom: 0.25rem;
+            filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.35));
+            transition: transform 0.2s;
+        }}
+        .item:hover .item-icon {{
+            transform: scale(1.08);
         }}
         .item-preview {{
             width: 100%;
@@ -189,6 +204,42 @@ HTML_TEMPLATE = """
         .item-info {{
             font-size: 0.75rem;
             color: var(--text-muted);
+        }}
+        .download-btn {{
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            width: 2.1rem;
+            height: 2.1rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background: var(--accent);
+            color: var(--bg-color);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            transform: translateY(-4px) scale(0.9);
+            transition: opacity 0.2s, transform 0.2s, background 0.2s;
+        }}
+        .download-btn svg {{
+            width: 1.1rem;
+            height: 1.1rem;
+        }}
+        .item:hover .download-btn,
+        .download-btn:focus-visible {{
+            opacity: 1;
+            transform: none;
+        }}
+        .item:hover .download-btn:hover {{
+            background: var(--accent-hover);
+            transform: scale(1.1);
+        }}
+        @media (hover: none) {{
+            .download-btn {{
+                opacity: 1;
+                transform: none;
+            }}
         }}
         .upload-card {{
             background: var(--card-bg);
@@ -232,7 +283,7 @@ HTML_TEMPLATE = """
     <header>
         <a href="/" class="logo">{title}</a>
         <div class="nav-links">
-            <a href="/upload" class="btn btn-primary">â†‘ Upload File</a>
+            <a href="/upload" class="btn btn-primary">Upload File</a>
             <a href="/" class="btn btn-outline">Home</a>
         </div>
     </header>
@@ -247,7 +298,7 @@ HTML_TEMPLATE = """
                     const term = e.target.value.toLowerCase();
                     document.querySelectorAll('.item').forEach(item => {{
                         const name = item.querySelector('.item-name').textContent.toLowerCase();
-                        item.style.display = name.includes(term) ? 'flex' : 'none';
+                        item.style.display = name.includes(term) ? '' : 'none';
                     }});
                 }});
             }}
@@ -352,11 +403,33 @@ UPLOAD_PAGE_TEMPLATE = """
 </script>
 """
 
+DOWNLOAD_ICON_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>'
+)
+
 def get_icon(name, is_dir=False):
     if is_dir:
         return "/assets/folder.svg"
     ext = os.path.splitext(name)[1].lower()
     return "/assets/" + FILE_ICON_BY_EXTENSION.get(ext, 'document.svg')
+
+def save_unique(filename, data):
+    """Save data without ever overwriting an existing file.
+    If 'report.pdf' already exists, the file is saved as 'report (1).pdf',
+    then 'report (2).pdf', and so on. Returns the name actually used."""
+    base, ext = os.path.splitext(filename)
+    candidate = filename
+    n = 0
+    while True:
+        try:
+            with open(candidate, 'xb') as f:  # 'x' mode fails if the file already exists
+                f.write(data)
+            return candidate
+        except FileExistsError:
+            n += 1
+            candidate = f"{base} ({n}){ext}"
 
 class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def translate_path(self, path):
@@ -399,6 +472,7 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         list = [
             f for f in list
             if not f.startswith('.')
+            and f != '__pycache__'
             and not self._is_server_file(os.path.join(path, f))
             and os.path.normcase(os.path.realpath(os.path.join(path, f))) != os.path.normcase(os.path.realpath(ASSETS_DIR))
         ]
@@ -425,9 +499,10 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             icon = get_icon(name, is_dir)
             safe_name = html_utils.escape(name)
             url_name = urllib.parse.quote(name, safe="")
-            safe_url_name = html.escape(url_name, quote=True)
+            safe_url_name = html_utils.escape(url_name, quote=True)
             link = f"{url_name}/" if is_dir else url_name
             size = ""
+            ext_label = os.path.splitext(name)[1].lstrip('.').upper()
             if not is_dir:
                 size_bytes = os.path.getsize(full_path)
                 for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -444,12 +519,25 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 preview = f'<img class="item-icon" src="{icon}" alt="" loading="lazy">'
 
+            if is_dir:
+                info = "Folder"
+                download_btn = ""
+            else:
+                info = f"{ext_label} &middot; {size}" if ext_label else size
+                download_btn = (
+                    f'<a class="download-btn" href="{safe_url_name}" download="{safe_name}" '
+                    f'title="Download" aria-label="Download {safe_name}">{DOWNLOAD_ICON_SVG}</a>'
+                )
+
             items_html += f'''
-                <a href="{html_utils.escape(link, quote=True)}" class="item">
+                <div class="item">
+                    <a href="{html_utils.escape(link, quote=True)}" class="item-link">
                         {preview}
                         <div class="item-name" title="{safe_name}">{safe_name}</div>
-                    <div class="item-info">{ "Folder" if is_dir else size }</div>
-                </a>
+                        <div class="item-info">{info}</div>
+                    </a>
+                    {download_btn}
+                </div>
             '''
 
         items_html += '</div>'
@@ -468,7 +556,7 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == '/upload':
-            print(f"ðŸ“© Upload request received from {self.client_address}")
+            print(f"[UPLOAD] Upload request received from {self.client_address}")
 
             content_type = self.headers.get('Content-Type')
             if not content_type or 'multipart/form-data' not in content_type:
@@ -492,7 +580,8 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 buffer = b""
 
                 while bytes_read < content_length:
-                    chunk = self.rfile.read(CHUNK_SIZE)
+                    # never ask for more bytes than remain, otherwise read() waits forever for data that never comes
+                    chunk = self.rfile.read(min(CHUNK_SIZE, content_length - bytes_read))
                     if not chunk:
                         break
                     bytes_read += len(chunk)
@@ -520,16 +609,18 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     filename_match = re.search(r'filename="([^"]+)"', header_section)
                                     if filename_match:
                                         filename = os.path.basename(filename_match.group(1))
-                                        print(f"  -> Saving file: {filename} ({len(data)} bytes)")
-                                        with open(filename, 'wb') as f:
-                                            f.write(data)
+                                        saved_name = save_unique(filename, data)
+                                        if saved_name != filename:
+                                            print(f"  -> '{filename}' already exists, saved as: {saved_name} ({len(data)} bytes)")
+                                        else:
+                                            print(f"  -> Saving file: {saved_name} ({len(data)} bytes)")
                                         uploaded_count += 1
 
                         # Keep only the last part in the buffer
                         buffer = parts[-1]
 
                 if uploaded_count > 0:
-                    print(f"âœ… Successfully uploaded {uploaded_count} file(s)")
+                    print(f"[OK] Successfully uploaded {uploaded_count} file(s)")
                     self.send_response(200)
                     self.send_header("Content-type", "text/html; charset=utf-8")
                     self.end_headers()
@@ -546,10 +637,10 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.wfile.write(html.encode("utf-8"))
                     return
                 else:
-                    print("âš ï¸ No files were successfully parsed from the request")
+                    print("[WARN] No files were successfully parsed from the request")
 
             except Exception as e:
-                print(f"âŒ Error during streaming upload: {e}")
+                print(f"[ERROR] Error during streaming upload: {e}")
                 import traceback
                 traceback.print_exc()
                 self.send_response(500)
@@ -584,7 +675,7 @@ if __name__ == "__main__":
             print(f"Invalid port provided. Using default {DEFAULT_PORT}")
 
     with ThreadedTCPServer(("", port), StyledHTTPRequestHandler) as httpd:
-        print(f"ðŸš€ Server started at http://localhost:{port}")
-        print(f"ðŸ“ Serving files from: {os.getcwd()}")
-        print(f"ðŸ’¡ Use Ctrl+C to stop the server")
+        print(f"[START] Server started at http://localhost:{port}")
+        print(f"[DIR] Serving files from: {os.getcwd()}")
+        print(f"[INFO] Use Ctrl+C to stop the server")
         httpd.serve_forever()
