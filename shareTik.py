@@ -1,16 +1,24 @@
 import http.server
+from http import cookies
 import socketserver
 import os
 import html as html_utils
 import urllib.parse
 import sys
 import re
+import json
+import uuid
+from datetime import datetime
 
 # --- Configuration ---
 DEFAULT_PORT = 8000
 SERVER_TITLE = "ShareTik"
 CHUNK_SIZE = 64 * 1024  # 64KB chunks for memory efficiency
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+LOG_FILE = os.path.join(BASE_DIR, "uploads.log")
+SESSION_COOKIE_NAME = "sharetik_session"
+
 IMAGE_PREVIEW_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
 FILE_ICON_BY_EXTENSION = {
     '.pdf': 'pdf.svg',
@@ -25,6 +33,9 @@ FILE_ICON_BY_EXTENSION = {
     '.jpg': 'image.svg', '.jpeg': 'image.svg', '.png': 'image.svg', '.gif': 'image.svg',
     '.webp': 'image.svg', '.bmp': 'image.svg', '.svg': 'image.svg',
 }
+
+# Sessions en mémoire : {session_id: {"pseudo": str, "ip": str, "connected_at": str}}
+ACTIVE_SESSIONS = {}
 
 # --- Modern UI Templates ---
 HTML_TEMPLATE = """
@@ -67,6 +78,8 @@ HTML_TEMPLATE = """
             top: 0;
             z-index: 100;
             border-bottom: 1px solid var(--border);
+            gap: 1rem;
+            flex-wrap: wrap;
         }}
         .logo {{
             font-size: 1.25rem;
@@ -76,7 +89,20 @@ HTML_TEMPLATE = """
         }}
         .nav-links {{
             display: flex;
-            gap: 1rem;
+            gap: 0.75rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }}
+        .user-badge {{
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            background: var(--bg-color);
+            border: 1px solid var(--border);
+            padding: 0.45rem 0.85rem;
+            border-radius: 0.5rem;
+        }}
+        .user-badge strong {{
+            color: var(--accent);
         }}
         .btn {{
             padding: 0.5rem 1rem;
@@ -136,6 +162,7 @@ HTML_TEMPLATE = """
             font-size: 1rem;
             outline: none;
             transition: border-color 0.2s;
+            box-sizing: border-box;
         }}
         .search-input:focus {{
             border-color: var(--accent);
@@ -202,6 +229,42 @@ HTML_TEMPLATE = """
         .upload-card:hover {{
             border-color: var(--accent);
         }}
+        .login-card {{
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 1.5rem;
+            padding: 3rem;
+            text-align: center;
+            max-width: 460px;
+            margin: 2rem auto;
+        }}
+        .pseudo-box {{
+            width: 100%;
+            max-width: 320px;
+            text-align: left;
+            margin: 0 auto 1.5rem auto;
+        }}
+        .pseudo-label {{
+            display: block;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+        }}
+        .pseudo-input {{
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            background: var(--bg-color);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.2s;
+            box-sizing: border-box;
+        }}
+        .pseudo-input:focus {{
+            border-color: var(--accent);
+        }}
         .file-input-label {{
             display: inline-block;
             padding: 1rem 2rem;
@@ -232,8 +295,7 @@ HTML_TEMPLATE = """
     <header>
         <a href="/" class="logo">{title}</a>
         <div class="nav-links">
-            <a href="/upload" class="btn btn-primary">â†‘ Upload File</a>
-            <a href="/" class="btn btn-outline">Home</a>
+            {header_actions}
         </div>
     </header>
     <main>
@@ -257,10 +319,38 @@ HTML_TEMPLATE = """
 </html>
 """
 
+LOGIN_PAGE_TEMPLATE = """
+<div class="login-card">
+    <h2 style="margin-top: 0; color: var(--text-main);">Welcome to ShareTik</h2>
+    <p style="color: var(--text-muted); margin-bottom: 2rem;">Enter your pseudo to start sharing files</p>
+    <form method="POST" action="/login" id="login-form">
+        <div class="pseudo-box">
+            <label for="pseudo-input" class="pseudo-label">Pseudo</label>
+            <input id="pseudo-input" name="pseudo" type="text" class="pseudo-input" placeholder="Enter your pseudo..." maxlength="60" required autofocus>
+        </div>
+        <button type="submit" class="btn btn-primary" style="padding: 0.75rem 2rem; font-size: 1rem;">Continue</button>
+    </form>
+</div>
+<script>
+    const loginForm = document.getElementById('login-form');
+    const pseudoInput = document.getElementById('pseudo-input');
+    const savedPseudo = localStorage.getItem('sharetik_pseudo');
+    if (savedPseudo && !pseudoInput.value) {{
+        pseudoInput.value = savedPseudo;
+    }}
+    loginForm.addEventListener('submit', () => {{
+        const val = pseudoInput.value.trim();
+        if (val) {{
+            localStorage.setItem('sharetik_pseudo', val);
+        }}
+    }});
+</script>
+"""
+
 UPLOAD_PAGE_TEMPLATE = """
 <div class="upload-card">
     <h2 style="margin-top: 0; color: var(--text-main);">Upload New Files</h2>
-    <p style="color: var(--text-muted); margin-bottom: 2rem;">Select one or more files to upload to the current directory</p>
+    <p style="color: var(--text-muted); margin-bottom: 2rem;">Uploading as <strong style="color: var(--accent);">{pseudo}</strong> to the current directory</p>
     <div style="display: flex; flex-direction: column; align-items: center; gap: 1.5rem;">
         <label for="file-upload" class="file-input-label">Choose Files</label>
         <input id="file-upload" type="file" multiple style="display: none;">
@@ -289,17 +379,17 @@ UPLOAD_PAGE_TEMPLATE = """
     const fileInput = document.getElementById('file-upload');
     const filesCountDiv = document.getElementById('files-count');
 
-    fileInput.addEventListener('change', () => {
+    fileInput.addEventListener('change', () => {{
         const count = fileInput.files.length;
-        filesCountDiv.textContent = count > 0 ? `${count} file${count > 1 ? 's' : ''} selected` : 'No files selected';
-    });
+        filesCountDiv.textContent = count > 0 ? `${{count}} file${{count > 1 ? 's' : ''}} selected` : 'No files selected';
+    }});
 
-    document.getElementById('upload-btn').addEventListener('click', () => {
+    document.getElementById('upload-btn').addEventListener('click', () => {{
         const files = fileInput.files;
-        if (files.length === 0) {
+        if (files.length === 0) {{
             alert('Please select at least one file.');
             return;
-        }
+        }}
 
         const btn = document.getElementById('upload-btn');
         const progContainer = document.getElementById('progress-container');
@@ -313,44 +403,45 @@ UPLOAD_PAGE_TEMPLATE = """
         msgDiv.innerHTML = '';
 
         const formData = new FormData();
-        for (const file of files) {
+        for (const file of files) {{
             formData.append('file', file);
-        }
+        }}
 
         const xhr = new XMLHttpRequest();
         xhr.open('POST', '/upload', true);
 
-        xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
+        xhr.upload.onprogress = (e) => {{
+            if (e.lengthComputable) {{
                 const percent = Math.round((e.loaded / e.total) * 100);
                 progBar.style.width = percent + '%';
                 progPercent.textContent = percent + '%';
-            }
-        };
+            }}
+        }};
 
-        xhr.onload = () => {
+        xhr.onload = () => {{
             btn.disabled = false;
             btn.style.opacity = '1';
-            if (xhr.status === 200) {
+            if (xhr.status === 200) {{
                 msgDiv.innerHTML = '<div class="status-msg status-success">Successfully uploaded files!</div>';
                 progContainer.style.display = 'none';
                 fileInput.value = '';
                 filesCountDiv.textContent = 'No files selected';
-            } else {
+            }} else {{
                 msgDiv.innerHTML = '<div class="status-msg status-error">Upload failed. Server responded with status: ' + xhr.status + '</div>';
-            }
-        };
+            }}
+        }};
 
-        xhr.onerror = () => {
+        xhr.onerror = () => {{
             btn.disabled = false;
             btn.style.opacity = '1';
             msgDiv.innerHTML = '<div class="status-msg status-error">A network error occurred. Make sure the server is running and accessible.</div>';
-        };
+        }};
 
         xhr.send(formData);
-    });
+    }});
 </script>
 """
+
 
 def get_icon(name, is_dir=False):
     if is_dir:
@@ -358,7 +449,90 @@ def get_icon(name, is_dir=False):
     ext = os.path.splitext(name)[1].lower()
     return "/assets/" + FILE_ICON_BY_EXTENSION.get(ext, 'document.svg')
 
+
+def record_pseudo_upload(pseudo, ip, filename, size):
+    entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "pseudo": pseudo,
+        "ip": ip,
+        "filename": filename,
+        "size": size,
+    }
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def get_latest_pseudos_by_file():
+    pseudos = {}
+    if not os.path.exists(LOG_FILE):
+        return pseudos
+    try:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    fname = data.get("filename")
+                    pseudo = data.get("pseudo")
+                    if fname and pseudo:
+                        pseudos[fname] = pseudo
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return pseudos
+
+
 class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def get_session(self):
+        cookie_header = self.headers.get("Cookie")
+        if not cookie_header:
+            return None, None
+        jar = cookies.SimpleCookie()
+        try:
+            jar.load(cookie_header)
+        except cookies.CookieError:
+            return None, None
+        morsel = jar.get(SESSION_COOKIE_NAME)
+        if not morsel:
+            return None, None
+        sid = morsel.value
+        session = ACTIVE_SESSIONS.get(sid)
+        if not session:
+            return None, sid
+        return session, sid
+
+    def build_header_actions(self, session):
+        if not session:
+            return '<a href="/" class="btn btn-outline">Pseudo</a>'
+        safe_pseudo = html_utils.escape(session["pseudo"])
+        return f'''
+            <span class="user-badge">Pseudo: <strong>{safe_pseudo}</strong></span>
+            <a href="/upload" class="btn btn-primary">↑ Upload File</a>
+            <a href="/" class="btn btn-outline">Home</a>
+        '''
+
+    def render_page(self, content, session=None):
+        return HTML_TEMPLATE.format(
+            title=SERVER_TITLE,
+            header_actions=self.build_header_actions(session),
+            content=content,
+        )
+
+    def render_login(self, session=None):
+        html_doc = self.render_page(LOGIN_PAGE_TEMPLATE, session=session)
+        encoded = html_doc.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def translate_path(self, path):
         request_path = urllib.parse.urlsplit(path).path
         if request_path == "/assets" or request_path.startswith("/assets/"):
@@ -367,7 +541,11 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return super().translate_path(path)
 
     def _is_server_file(self, path):
-        return os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(__file__))
+        real_target = os.path.normcase(os.path.realpath(path))
+        return real_target in {
+            os.path.normcase(os.path.realpath(__file__)),
+            os.path.normcase(os.path.realpath(LOG_FILE)),
+        }
 
     def send_head(self):
         if self._is_server_file(self.translate_path(self.path)):
@@ -376,33 +554,54 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return super().send_head()
 
     def do_GET(self):
-        if self.path == '/upload':
+        request_path = urllib.parse.urlsplit(self.path).path
+
+        if request_path == "/assets" or request_path.startswith("/assets/"):
+            return super().do_GET()
+
+        session, _ = self.get_session()
+        if not session:
+            self.render_login()
+            return
+
+        if request_path == "/upload":
+            page_content = UPLOAD_PAGE_TEMPLATE.format(pseudo=html_utils.escape(session["pseudo"]))
+            response_html = self.render_page(page_content, session=session)
+            encoded = response_html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
             self.end_headers()
-            html = HTML_TEMPLATE.format(title=SERVER_TITLE, content=UPLOAD_PAGE_TEMPLATE)
-            self.wfile.write(html.encode("utf-8"))
+            self.wfile.write(encoded)
             return
+
         return super().do_GET()
 
     def list_directory(self, path):
+        session, _ = self.get_session()
+        if not session:
+            self.render_login()
+            return None
+
         if os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.realpath(ASSETS_DIR)):
             self.send_error(404, "Directory not found")
             return None
 
         try:
-            list = os.listdir(path)
+            entries = os.listdir(path)
         except OSError:
             self.send_error(404, "No permission to access directory")
             return None
 
-        list = [
-            f for f in list
+        entries = [
+            f for f in entries
             if not f.startswith('.')
             and not self._is_server_file(os.path.join(path, f))
             and os.path.normcase(os.path.realpath(os.path.join(path, f))) != os.path.normcase(os.path.realpath(ASSETS_DIR))
         ]
-        list.sort(key=lambda x: (not os.path.isdir(os.path.join(path, x)), x.lower()))
+        entries.sort(key=lambda x: (not os.path.isdir(os.path.join(path, x)), x.lower()))
+
+        pseudos_map = get_latest_pseudos_by_file()
 
         rel_path = os.path.relpath(path, os.getcwd())
         if rel_path == '.':
@@ -414,18 +613,18 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             for p in parts:
                 current += "/" + p
                 links.append(f'<a href="{urllib.parse.quote(current, safe="/")}">{html_utils.escape(p)}</a>')
-            breadcrumbs = f'<a href="/">Root</a> / ' + " / ".join(links)
+            breadcrumbs = '<a href="/">Root</a> / ' + " / ".join(links)
 
         items_html = '<div class="search-container"><input type="text" class="search-input" placeholder="Search files and folders..."></div>'
         items_html += '<div class="grid">'
 
-        for name in list:
+        for name in entries:
             full_path = os.path.join(path, name)
             is_dir = os.path.isdir(full_path)
             icon = get_icon(name, is_dir)
             safe_name = html_utils.escape(name)
             url_name = urllib.parse.quote(name, safe="")
-            safe_url_name = html.escape(url_name, quote=True)
+            safe_url_name = html_utils.escape(url_name, quote=True)
             link = f"{url_name}/" if is_dir else url_name
             size = ""
             if not is_dir:
@@ -436,19 +635,25 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         break
                     size_bytes /= 1024
 
+            if is_dir:
+                info_text = "Folder"
+            else:
+                pseudo = pseudos_map.get(name)
+                info_text = f"{size} • par {html_utils.escape(pseudo)}" if pseudo else size
+
             if not is_dir and os.path.splitext(name)[1].lower() in IMAGE_PREVIEW_EXTENSIONS:
                 preview = (
-                        f'<img class="item-preview" src="{safe_url_name}" alt="{safe_name}" loading="lazy" '
-                        f'onerror="this.onerror=null;this.src=\'{icon}\';this.className=\'item-icon\';">'
+                    f'<img class="item-preview" src="{safe_url_name}" alt="{safe_name}" loading="lazy" '
+                    f'onerror="this.onerror=null;this.src=\'{icon}\';this.className=\'item-icon\';">'
                 )
             else:
                 preview = f'<img class="item-icon" src="{icon}" alt="" loading="lazy">'
 
             items_html += f'''
                 <a href="{html_utils.escape(link, quote=True)}" class="item">
-                        {preview}
-                        <div class="item-name" title="{safe_name}">{safe_name}</div>
-                    <div class="item-info">{ "Folder" if is_dir else size }</div>
+                    {preview}
+                    <div class="item-name" title="{safe_name}">{safe_name}</div>
+                    <div class="item-info">{info_text}</div>
                 </a>
             '''
 
@@ -457,8 +662,9 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             <div class="breadcrumb">{breadcrumbs}</div>
             {items_html}
         '''
-        html = HTML_TEMPLATE.format(title=SERVER_TITLE, content=content)
-        encoded = html.encode("utf-8")
+
+        response_html = self.render_page(content, session=session)
+        encoded = response_html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
@@ -467,8 +673,39 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return None
 
     def do_POST(self):
-        if self.path == '/upload':
-            print(f"ðŸ“© Upload request received from {self.client_address}")
+        request_path = urllib.parse.urlsplit(self.path).path
+
+        if request_path == '/login':
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8', errors='ignore')
+            params = urllib.parse.parse_qs(body)
+            pseudo = (params.get('pseudo', [''])[0]).strip()[:60]
+            if not pseudo:
+                self.render_login()
+                return
+
+            sid = uuid.uuid4().hex
+            ACTIVE_SESSIONS[sid] = {
+                "pseudo": pseudo,
+                "ip": self.client_address[0],
+                "connected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            print(f"🔐 Session started for '{pseudo}' ({self.client_address[0]})")
+
+            self.send_response(302)
+            self.send_header("Set-Cookie", f"{SESSION_COOKIE_NAME}={sid}; Path=/; HttpOnly; SameSite=Lax")
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+
+        if request_path == '/upload':
+            session, _ = self.get_session()
+            if not session:
+                self.send_error(401, "Session required")
+                return
+
+            pseudo = session["pseudo"]
+            print(f"📩 Upload request from '{pseudo}' {self.client_address}")
 
             content_type = self.headers.get('Content-Type')
             if not content_type or 'multipart/form-data' not in content_type:
@@ -483,12 +720,9 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             boundary_bytes = b'--' + boundary.encode('utf-8')
 
             try:
-                # Streamed parser to handle large files
-                uploaded_count = 0
+                uploaded_files = []
                 content_length = int(self.headers.get('Content-Length', 0))
                 bytes_read = 0
-
-                # Temporary buffer to handle boundary crossing
                 buffer = b""
 
                 while bytes_read < content_length:
@@ -498,43 +732,43 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     bytes_read += len(chunk)
                     buffer += chunk
 
-                    # Check if we have a boundary in the current buffer
                     if boundary_bytes in buffer:
-                        # Split the buffer into parts
                         parts = buffer.split(boundary_bytes)
 
-                        # Process all but the last part (which might be incomplete)
                         for i in range(len(parts) - 1):
                             part = parts[i]
                             if part.strip() and b'Content-Disposition' in part:
-                                # Extract headers and data
                                 header_end = part.find(b'\r\n\r\n')
                                 if header_end != -1:
                                     header_section = part[:header_end].decode('utf-8', errors='ignore')
                                     data = part[header_end+4:]
 
-                                    # Remove trailing \r\n
                                     if data.endswith(b'\r\n'):
                                         data = data[:-2]
 
                                     filename_match = re.search(r'filename="([^"]+)"', header_section)
                                     if filename_match:
                                         filename = os.path.basename(filename_match.group(1))
-                                        print(f"  -> Saving file: {filename} ({len(data)} bytes)")
-                                        with open(filename, 'wb') as f:
-                                            f.write(data)
-                                        uploaded_count += 1
+                                        if filename:
+                                            print(f"  -> Saving file: {filename} ({len(data)} bytes)")
+                                            with open(filename, 'wb') as f:
+                                                f.write(data)
+                                            uploaded_files.append((filename, len(data)))
 
-                        # Keep only the last part in the buffer
                         buffer = parts[-1]
 
-                if uploaded_count > 0:
-                    print(f"âœ… Successfully uploaded {uploaded_count} file(s)")
+                if uploaded_files:
+                    client_ip = self.client_address[0]
+                    for fname, fsize in uploaded_files:
+                        print(f"  -> Pseudo: '{pseudo}' | File: '{fname}' ({fsize} bytes)")
+                        record_pseudo_upload(pseudo, client_ip, fname, fsize)
+
+                    print(f"✅ Successfully uploaded {len(uploaded_files)} file(s) from '{pseudo}'")
                     self.send_response(200)
                     self.send_header("Content-type", "text/html; charset=utf-8")
                     self.end_headers()
-                    msg = f'<div class="status-msg status-success">Successfully uploaded {uploaded_count} file(s)!</div>'
-                    html = HTML_TEMPLATE.format(title=SERVER_TITLE, content=f'''
+                    msg = f'<div class="status-msg status-success">Successfully uploaded {len(uploaded_files)} file(s) as {html_utils.escape(pseudo)}!</div>'
+                    response_html = self.render_page(f'''
                         <div class="upload-card">
                             {msg}
                             <div style="margin-top: 2rem; display: flex; gap: 1rem; justify-content: center;">
@@ -542,14 +776,14 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 <a href="/upload" class="btn btn-outline">Upload Another</a>
                             </div>
                         </div>
-                    ''')
-                    self.wfile.write(html.encode("utf-8"))
+                    ''', session=session)
+                    self.wfile.write(response_html.encode("utf-8"))
                     return
                 else:
-                    print("âš ï¸ No files were successfully parsed from the request")
+                    print("⚠️ No files were successfully parsed from the request")
 
             except Exception as e:
-                print(f"âŒ Error during streaming upload: {e}")
+                print(f"❌ Error during streaming upload: {e}")
                 import traceback
                 traceback.print_exc()
                 self.send_response(500)
@@ -561,19 +795,21 @@ class StyledHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-type", "text/html; charset=utf-8")
             self.end_headers()
             msg = '<div class="status-msg status-error">No valid files selected for upload.</div>'
-            html = HTML_TEMPLATE.format(title=SERVER_TITLE, content=f'''
+            response_html = self.render_page(f'''
                 <div class="upload-card">
                     {msg}
                     <a href="/upload" class="btn btn-primary" style="display:block; margin: 2rem auto; width: fit-content;">Try Again</a>
                 </div>
-            ''')
-            self.wfile.write(html.encode("utf-8"))
+            ''', session=session)
+            self.wfile.write(response_html.encode("utf-8"))
             return
 
         return super().do_POST()
 
+
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
+
 
 if __name__ == "__main__":
     port = DEFAULT_PORT
@@ -584,7 +820,7 @@ if __name__ == "__main__":
             print(f"Invalid port provided. Using default {DEFAULT_PORT}")
 
     with ThreadedTCPServer(("", port), StyledHTTPRequestHandler) as httpd:
-        print(f"ðŸš€ Server started at http://localhost:{port}")
-        print(f"ðŸ“ Serving files from: {os.getcwd()}")
-        print(f"ðŸ’¡ Use Ctrl+C to stop the server")
+        print(f"🚀 Server started at http://localhost:{port}")
+        print(f"📁 Serving files from: {os.getcwd()}")
+        print(f"💡 Use Ctrl+C to stop the server")
         httpd.serve_forever()
